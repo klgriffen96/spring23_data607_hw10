@@ -1,0 +1,845 @@
+---
+title: "Intro to Natural Langauge Processing"
+author: "Kayleah Griffen"
+date: "3/27/2023"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The objective of this assignment is to get familiarized with Natural Language Processing. To do this, first I will recreate an example of NLP from an NLP textbook and then do my own extension of the work through the examination of another text and the use of another sentiment lexicon.
+
+## Text Mining Chapter 2 Example 
+
+The following section of code is provided by "Text Mining with R: A Tidy Approach, Chapter 2: Sentiment analysis with tidy data" available at:
+https://www.tidytextmining.com/sentiment.html (1). It is recreated here for learning purposes.
+
+First, load the required packages.
+
+```{r, message=FALSE, warning=FALSE}
+library(tidytext)
+library(janeaustenr)
+library(wordcloud)
+library(reshape2)
+library(textdata)
+library(DT)
+library(pdftools)
+library(tidyverse)
+library(httr)
+library(readxl)
+library(RCurl)
+library(rvest)
+library(igraph)
+library(ggraph)
+```
+
+Next take a look at the sentiments available from the tidytext package. Note you need to first run this as a normal codechunk and select yes to use each lexicon (option 1) before it will work to knit it. See the last section, "Lexicon Licenses and Citation" for the citations and licenses for each of these lexicons.
+
+```{r}
+# 
+options(DT.options = list(pageLength = 5))
+
+datatable(get_sentiments("afinn"))
+datatable(get_sentiments("bing"))
+datatable(get_sentiments("nrc"))
+```
+
+Each lexicon is slightly different but they all represent a sentiment about a word.
+
+The `austen_books` function returns a tibble with the books text and the book name. They can be grouped by book, saved with the row number as the `linenumber` (every books first line number starts at 1) and the chapter can be detected. Then the `ungroup` function can be applied to undo the grouping by book and last the `unnest_tokens` function can be used to separate out each word into its own row - its first argument is the dataframe, then the name of the column you want the words put into and last is the column name that the text is coming from. This creates a tibble with every book name, line number, chapter number, and word.
+
+```{r}
+# 
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(str_detect(text, 
+                                regex("^chapter [\\divxlc]", 
+                                      ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+```
+
+The first sentiment analysis can now be done. Using the NRC lexicon, all of the joy words were found and then joined with the "Emma" book. An inner join was perfromed so only the matching rows from both dataframes were preserved. Then a count can be done to get the most common words.
+
+```{r}
+# 
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+
+tb <- tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy, by = "word") %>%
+  count(word, sort = TRUE)
+
+datatable(tb)
+```
+Next, using the bing lexicon we can go through 80 lines at a time and see how sentiment changes over time. The count is grouped by index, which is the line number divided by 80 (floored) and the number of positive and negative for each are counted. Then a `pivot_wider` can be done so that the positive and negative counts are each in their own column, then a new column can be created with the total positive minus total negative for that section to get an overall idea for the sentiment. Then the sentiment can be graphed. 
+
+```{r, warning=FALSE}
+# 
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing"), by="word") %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+#
+
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+```
+
+Now, turn to focusing just on "Pride and Prejudice". First filter for just that book. Next use each different sentiment to get an understanding of how the sentiment changes throughout the book, for afinn this is done by summing the values for each section and for bing and nrc it is done the same way as above, getting the total positive and negatives and then subtracting them. Then both of the tibbles can be bound together and a plot can be made. 
+
+```{r, warning=FALSE}
+# 
+pride_prejudice <- tidy_books %>% 
+  filter(book == "Pride & Prejudice")
+
+# 
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn"), by ="word") %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(
+  pride_prejudice %>% 
+    inner_join(get_sentiments("bing"), by ="word") %>%
+    mutate(method = "Bing et al."),
+  pride_prejudice %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative")) , by ="word"
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+# 
+bind_rows(afinn, 
+          bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+Although the results are a bit different, each lexicon does show a similar shape throughout the novel in terms of location of highs/lows.
+
+Next the total positive and negative words for the bing and nrc lexicons can be counted. 
+
+```{r}
+# 
+get_sentiments("nrc") %>% 
+  filter(sentiment %in% c("positive", "negative")) %>% 
+  count(sentiment)
+
+# 
+get_sentiments("bing") %>% 
+  count(sentiment)
+```
+
+It looks like bing has more negative words than nrc and about the same positive words.Therefor it makes sense that bing picked up more negatives then nrc did.
+
+Next, the total times a word was used and whether it was positive or negative can be checked.
+
+```{r, warning=FALSE}
+#
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing"), by ="word") %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+datatable(bing_word_counts)
+```
+
+It can also be displayed in a plot.
+
+```{r}
+#
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+```
+
+It was noted that "miss" is not a negative word. It can be added as a custom stop word, just binding it with `stop_words`.
+
+```{r}
+# 
+custom_stop_words <- bind_rows(tibble(word = c("miss"),  
+                                      lexicon = c("custom")), 
+                               stop_words)
+```
+Now, to get a sense of the words, a word cloud can be created.
+
+```{r, warning=FALSE}
+# 
+tidy_books %>%
+  anti_join(custom_stop_words, by="word") %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+
+
+Another wordcloud can be created where the positive and negative words are separated out. I added a line to get rid of the "miss" by anti-joining the custom stop words. The size of the word represents the frequency but the same scale is not used for postive/negative.
+
+```{r, warning=FALSE, message=FALSE}
+#
+tidy_books %>%
+  anti_join(y= custom_stop_words, by="word")%>%
+  inner_join(y= get_sentiments("bing"),by="word") %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+```
+
+Instead of tokenizing into words - tokenizing can also be done into sentences by specifying "sentence". 
+
+```{r}
+# 
+p_and_p_sentences <- tibble(text = prideprejudice) %>% 
+  unnest_tokens(sentence, text, token = "sentences")
+```
+
+Another option is to divide by chapter.
+
+```{r}
+#
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex", 
+                pattern = "Chapter|CHAPTER [\\dIVXLC]") %>%
+  ungroup()
+
+austen_chapters %>% 
+  group_by(book) %>% 
+  summarise(chapters = n())
+```
+
+Then, different characteristics about each chapter can be explored. For example, the most negative chapters of each book can be found.
+
+```{r}
+#
+options(dplyr.summarise.inform = FALSE)
+
+bingnegative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+
+wordcounts <- tidy_books %>%
+  group_by(book, chapter) %>%
+  summarize(words = n(), .groups = "drop")
+
+tidy_books %>%
+  semi_join(bingnegative, by = "word") %>%
+  group_by(book, chapter) %>%
+  summarize(negativewords = n()) %>%
+  left_join(wordcounts, by = c("book", "chapter")) %>%
+  mutate(ratio = negativewords/words) %>%
+  filter(chapter != 0) %>%
+  slice_max(ratio, n = 1) %>% 
+  ungroup()
+```
+
+Overall, this chapter of the book was an introduction into sentiment analysis using Jane Austen texts. Different lexicons were used and compared to better understand each of them. Methods of summarizing and visualizing the sentiment analysis that was performed were explored.
+
+## Extension 
+
+### Part 1: Spanish Emotional Lexicon for Childrens Books in Spanish
+
+As and extension, I was curious about using a Spanish Lexicon on Spanish childrens books. I researched Spanish Lexicons and found one titled the "Spanish Emotion Lexicon" created by Grigori Sidorov (2,3). It has 2036 words that are related to either joy (alegria), anger (enojo), fear (miedo), sadness (tristeza), surprise (sorpresa), and disgust (repulsion). For each word it also has a "Probability Factor of Affective use" (PFA) which describes how well the word is associated with the emotion.
+
+Please note - for this to display properly (with accents) I needed to change the language settings on my computer to "English - World".
+
+I will load the childrens book into a dataframe, `df_books`, and the lexicon into a dataframe, `df_lexicon`. The childrens books are sourced from the Spanish Academy Website: https://www.spanish.academy/blog/15-childrens-spanish-books-with-free-pdf-download/ (4), I downloaded a portion of them and uploaded them to my github for easy/stable access. 
+
+```{r}
+# Get the books into a dataframe
+git_page <- read_html("https://github.com/klgriffen96/spring23_data607_hw10")
+
+href_list <- git_page |> html_elements("a") |> html_attr("href")
+
+pdf_links <- href_list[str_detect(href_list, "\\.pdf")==TRUE]
+ 
+raw_links <- str_replace(pdf_links,"blob","raw")
+
+df_books <- data.frame(book = character(), name = character())
+
+for (i in 1:length(pdf_links)){
+  github_link <- paste0("https://github.com", raw_links[i])
+  temp_file <- tempfile(fileext = ".pdf")
+  req <- GET(github_link, 
+          # write result to disk
+          write_disk(path = temp_file))
+  book <- pdf_text(temp_file)
+  book <- paste0(book, collapse = "\n")
+  name <- str_remove(github_link, "https://github.com/klgriffen96/spring23_data607_hw10/raw/main/")
+  name <- str_remove(name, "\\.pdf")
+  df_temp <- data.frame(book = book, name=name)
+  df_books <- rbind(df_books, df_temp)
+}
+
+# Get the lexicon
+github_link <- "https://github.com/klgriffen96/spring23_data607_hw10/blob/main/SEL.xlsx?raw=true"
+temp_file <- tempfile(fileext = ".xlsx")
+req <- GET(github_link, 
+          # write result to disk
+          write_disk(path = temp_file))
+
+df_lexicon <- read_excel(temp_file)
+datatable(df_lexicon)  
+```
+
+I can see that the accents are preserved when reading into r. First I will tokenize, so there will be a dataframe containing the link (which has the book title in it) and the word.
+
+```{r}
+tidy_kids <- df_books %>%
+  unnest_tokens(word, book)
+```
+
+I will rename the columns to english names.
+
+```{r}
+df_lexicon <- df_lexicon %>% 
+       rename("word" = "Palabra", "category" = "Categoría")
+```
+
+I will rename the categories to english.
+
+```{r}
+df_lexicon$category[df_lexicon$category=="Alegría"]<-"happy"
+df_lexicon$category[df_lexicon$category=="Enojo"]<-"angry"
+df_lexicon$category[df_lexicon$category=="Miedo"]<-"fearful"
+df_lexicon$category[df_lexicon$category=="Repulsión"]<-"disgusted"
+df_lexicon$category[df_lexicon$category=="Sorpresa"]<-"surprised"
+df_lexicon$category[df_lexicon$category=="Tristeza"]<-"sad"
+
+```
+
+Next I will perform and inner join to extract the words from the book that have a sentiment tied to them.
+
+```{r, warning=FALSE}
+tidy_kids_joined <- tidy_kids %>%
+  inner_join(df_lexicon, by="word") 
+datatable(tidy_kids_joined)
+```
+
+Now, I can get a sense of the books sentiment by making a plot.
+
+```{r}
+tidy_kids_joined %>%
+  group_by(name, word, category) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  ggplot(aes(category, count, fill=category)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~name, scales = "free_y") +
+  labs(x = "Emotion",
+       y = "Count") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+As I expected, happy (Alegria) words are usually the most common or one of the most common in kids books. However in the "Soldadito" book, that is not the case. Exploring this a little more, I wanted to pull out the words that are driving the "sad" sentiment.
+
+```{r}
+temp <- tidy_kids_joined %>%
+  filter(category == "sad" & name == "Soldadito" )  %>%
+  group_by(name, word, PFA) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  arrange(desc(PFA))
+paste0("Words: ", dim(temp)[1], sep = " ")
+datatable(temp)
+```
+
+There are 17 words that contribute to the negative sentiment, only 4 of them have a PFA of over 0.75. As mentioned previously, the PFA is a measure of how closely associated a word is with the emotion. 
+
+I'll do a recreation of the previous plots - but only using PFAs over 0.75 and see what they look like.
+
+
+```{r}
+tidy_kids_joined %>%
+  filter(PFA > 0.75)%>%
+  group_by(name, word, category) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  ggplot(aes(category, count, fill=category)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~name, scales = "free_y") +
+  labs(x = "Emotion",
+       y = "Count") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+Setting a high threshold for PFA resulted in happy really showing up as the strongest emotion in most books. Still though, in "Soldadito" fearful and sad come out stronger than happy. 
+
+### Part 2: Spanish Binary Lexicon for Childrens Books in Spanish
+
+Next, I wanted to verify my findings with another lexicon, I researched and found "Sentiment Lexicons for 81 Languages" available on Kaggle (5). I downloaded the dataset, extracted the files and then uploaded the two Spanish files to my github. The relevant files were titled "negative_es.txt" and "positive_es.txt". Because the Spanish words are divided into two files, one for negative and one for positive words, I will need to read both in and then combine them into one dataframe that has the word and has the positive/negative sentiment.
+
+First I will read in the files. Even though the file extension is text, they can be read in with read.csv because you can specify the deliminator. 
+
+```{r}
+x <- getURL("https://raw.githubusercontent.com/klgriffen96/spring23_data607_hw10/main/negative_words_es.txt")
+neg_words <- read.csv(text = x, sep="\n")
+
+x <- getURL("https://raw.githubusercontent.com/klgriffen96/spring23_data607_hw10/main/positive_words_es.txt")
+pos_words <- read.csv(text = x, sep="\n")
+```
+
+Now they can be loaded into a dataframe - adding the sentiment to them.
+
+```{r}
+
+df_neg <- data.frame(neg_words,
+                     list(rep("negative", dim(neg_words)[1])))
+
+df_pos <- data.frame(pos_words,
+                     list(rep("positive", dim(pos_words)[1])))
+
+colnames(df_neg)[1] ="word"
+colnames(df_neg)[2] ="sentiment"
+colnames(df_pos)[1] ="word"
+colnames(df_pos)[2] ="sentiment"
+
+df_lexicon2 <- rbind(df_neg, df_pos)
+```
+
+
+Now the lexicon can be joined with the `tidy_kids` dataframe which is the tokenized set of all the text in all of the books.
+
+
+```{r}
+tidy_kids_joined2 <- tidy_kids %>%
+  inner_join(df_lexicon2, by="word") 
+datatable(tidy_kids_joined2)
+```
+
+Now, make a similar plot to before.
+
+```{r}
+tidy_kids_joined2 %>%
+  group_by(name, word, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  ggplot(aes(sentiment, count, fill=sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~name, scales = "free_y") +
+  labs(x = "Emotion",
+       y = "Count") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+Based on this Lexicon, it looks like in some cases there are actually more negative words then positive words. Take a look at what words are contributing to negativity and positvity.
+
+```{r}
+tidy_kids_joined2 %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+```
+
+Look into "Patito Feo" and "Elefante Rudyard Kipling" (which had the most negativity) to see what words are contributing to their negativity. 
+
+```{r}
+temp <- tidy_kids_joined2 %>%
+  filter(sentiment == "negative" & 
+           name %in% c("Elefante_Rudyard_Kipling", "PatitoFeo"))  %>%
+  group_by(name, sentiment, word) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  arrange(desc(count))
+datatable(temp)
+```
+
+Now I can create a list of Spanish stopwords. Based on the wordcloud and list above I will remove the following:
+
+- "para" = for
+- "color" = hot
+- "ninos" = kids
+- "tiempo" = time
+- "cambiar" = change
+- "sitio" = site
+- "mucho" = alot
+
+```{r}
+spanish_stopwords <- c("para", "mucho", "niños", "tiempo", "cambiar", "sitio", "mucho")
+df_stop <- data.frame(word = spanish_stopwords)
+```
+
+
+Take a look at the new plot. 
+
+```{r}
+tidy_kids_joined2 %>%
+  anti_join(df_stop, by = "word") %>%
+  group_by(name, word, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  ggplot(aes(sentiment, count, fill=sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~name, scales = "free_y") +
+  labs(x = "Emotion",
+       y = "Count") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+It looks like still the "Elefante Rudyard Kipling" and "Patito Feo" contain more negative sentiment then the rest. In "Patito Feo" this is the result of heavy use of the word, "ugly". 
+
+In my opinion, the Spanish Emotional Lexicon is superior to this Spanish Binary Lexicon because it provided not only a category for the words but also a form of a confidence level. Filtering based on the confidence level was helpful, and that is not an option available in the Spanish Binary Lexicon.
+
+### Part 3: Analysis of Michelle Obama and Melania Trumps Speaches
+
+Shortly after Melania Trump gave her speech at the Republican National Convention in 2016, she was accused of copying Michelle Obamas 2008 Democratic National Convention speech. What follows is a short analysis of the similarity between the two speeches. 
+
+First, load the text files.
+
+```{r}
+github_link <- "https://github.com/klgriffen96/spring23_data607_hw10/raw/main/melania.txt"
+temp_file <- tempfile(fileext = ".txt")
+req <- GET(github_link, 
+          # write result to disk
+          write_disk(path = temp_file))
+df_melania_start <- read.delim(temp_file, sep = "\n")
+
+github_link <- "https://github.com/klgriffen96/spring23_data607_hw10/raw/main/michelle.txt"
+temp_file <- tempfile(fileext = ".txt")
+req <- GET(github_link, 
+          # write result to disk
+          write_disk(path = temp_file))
+df_michelle_start <- read.delim(temp_file, sep = "\n")
+```
+
+Now that both files have been read in, basic processing can be done.
+
+```{r}
+colnames(df_melania_start)[1] ="segment"
+colnames(df_michelle_start)[1] ="segment"
+
+df_melania <- df_melania_start %>%
+  unnest_tokens(word, segment)
+
+# get rid of weird characters
+df_melania <- subset(df_melania, !(str_detect(word,"â")))
+
+df_michelle <- df_michelle_start %>%
+  unnest_tokens(word, segment)
+
+# get rid of weird characters
+df_michelle <- subset(df_michelle, !(str_detect(word,"â")))
+```
+
+Now look at what words are repeated between the two.
+
+```{r}
+custom_stop_words2 <- c("it’s", "that’s", "i’ve", "we’ve", "won’t", "it’s", "he’d", "he’s", "your’s", "can’t", "don’t", "you’re", "can’t")
+custom_stop <- rbind(stop_words,data.frame(word = custom_stop_words2, lexicon = rep("custom", length(custom_stop_words2))))
+
+df_melania <- df_melania |> anti_join(custom_stop, by = "word")
+df_michelle <- df_michelle |> anti_join(custom_stop, by = "word") 
+
+intersect <- intersect(df_melania$word, df_michelle$word)
+
+length(intersect)/dim(df_michelle)[1]
+
+df_intersect <- data.frame(word = intersect)
+```
+A quick look, shows 11% of the words used (not including stop words) were the same. 
+
+Take a look at the shared words, along with how often the shared words were used in each speech and the total use of the shared words.
+
+```{r}
+
+i_ma <- df_melania |>
+  filter(word %in% df_intersect$word) |>
+  group_by(word) |>
+  summarise(count = n())
+
+i_mi <- df_michelle |>
+  filter(word %in% df_intersect$word) |>
+  group_by(word) |>
+  summarise(count = n()) 
+
+df_intersect <- data.frame (cbind(word = i_ma$word, 
+                      count_melania = i_ma$count, 
+                      count_michelle = i_mi$count))
+
+df_intersect <- df_intersect |> mutate(total = as.integer(count_melania) + 
+                                                as.integer(count_michelle)) |>
+                arrange(desc(total))
+
+datatable(df_intersect, options = list(pageLength = 10))
+```
+
+Next, I read a report by Expert IQ who did an analysis on the two speeches (6). The thesis of the report is that outside of one specific section of the speeches, the speeches exhibit significant linguist differences. The main linguistic differences they say are topics covered, emotions exhibited, main concepts, citing of their husbands, readability, sentence length, and verbs used.
+
+To illustrate differences, I will make a word cloud of both Melania's and Michelle's speeches without the intersecting words. 
+
+```{r, warning=FALSE}
+
+df_ma <- data.frame(df_melania,
+                     list(rep("melania", dim(df_melania)[1])))
+
+df_mi <- data.frame(df_michelle,
+                     list(rep("michelle", dim(df_michelle)[1])))
+
+colnames(df_ma)[1] ="word"
+colnames(df_ma)[2] ="person"
+colnames(df_mi)[1] ="word"
+colnames(df_mi)[2] ="person"
+
+df_mm <- rbind(df_ma, df_mi)
+
+
+# color and setup from https://rpubs.com/brandonkopp/creating-word-clouds-in-r
+par(mfrow=c(1,2))
+
+df_mm %>%
+  filter(person == "michelle") %>%
+  anti_join(y= df_intersect, by="word") %>%
+  group_by(word, person) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 75, min.freq =2, scale=c(3, .5), random.order = FALSE, random.color = FALSE, colors= c("lightsteelblue","lightsteelblue","lightsteelblue","lightsteelblue")))
+
+df_mm %>%
+  filter(person == "melania") %>%
+  anti_join(y= df_intersect, by="word") %>%
+  group_by(word, person) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 75, min.freq =2, scale=c(3, .5), random.order = FALSE, random.color = FALSE, colors= c("indianred","indianred","indianred","indianred")))
+
+```
+
+Standing out, is how often both Melania and Michelle referred to their husbands. Of note - only words with more than 2 occurrences were plotted. You can see that Michelle spoke about her points more than once more often in contrast to Melania. Michelles speech was also longer than Melanias so that could be another reason. 
+
+In Chapter 3 of the tidytext book, they cover "tf-idf" which stands for term frequency (tf) and inverse document frequency "idf". When tf is multiplied by idf the "tf-idf" results which is described as a measure of how important a specific word is to a file in a set. The tidytext package contains a `bind_tf_idf` function where the `tf_idf` is low (0) for words that occur in every file in the set. It is higher for words that occur less between the texts. Below I use `bind_tf_idf` to see if the same words highlighted in the wordcloud of differences are also found with the  tf-idf approach. 
+
+```{r}
+speech_words <- df_mm |>
+                count(person, word, sort = TRUE)
+
+total_words <- speech_words |>
+                group_by(person) |>
+                summarise(total = sum(n))
+  
+speech_words <- left_join(speech_words, total_words, by = "person")
+
+speech_tf_idf <- speech_words %>%
+  bind_tf_idf(word, person, n)
+
+s_sorted <- speech_tf_idf %>%
+  select(-total) %>%
+  arrange(desc(tf_idf))
+
+datatable(s_sorted)
+```
+
+
+As expected, the names on the presidents appear the most, and for Michelle - "hope" the campaign slogan also comes up with one of the highest tf-idfs. Michelles words appear to be more unique and more often used then Melanias (which is why she appears higher in the list more often then Melania). One difference from the Chapter 3 book analysis is I went ahead and removed stopwords prior to conducting the analysis. Had I left them in, they would have had a very low tf-idf score. I did add some stopwords to make my own custom stop words because I noticed that contractions didn't seem to be included in the stopword dictionary.
+
+In Chapter 4 of the tidytext book, they cover "tokenizing by n-grams" which means looking at words together rather than separately. I will follow the guide in the book to check out the n-grams in Melania and Michelles speeches (rather than using the Jane Austin texts).
+
+First, create the bigrams.
+
+```{r}
+michelle_ngrams <- df_michelle_start |>
+  unnest_tokens(bigram, segment, token = "ngrams", n = 2) |>
+  filter(!is.na(bigram))
+
+melania_ngrams <- df_melania_start |>
+  unnest_tokens(bigram, segment, token = "ngrams", n = 2) |>
+  filter(!is.na(bigram))
+```
+
+Check out the most common bigrams with count.
+
+```{r}
+michn <- michelle_ngrams |>
+  count(bigram, sort = TRUE)
+
+melan <- melania_ngrams |>
+  count(bigram, sort = TRUE)
+
+par(mfrow=c(1,2))
+
+datatable(michn)
+datatable(melan)
+
+```
+
+As in the texbook example, many of the bigrams contain stopwords. Now I can go about removing the stopwords.
+
+```{r}
+bigrams_separated_michelle <- michelle_ngrams %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigrams_filtered_michelle <- bigrams_separated_michelle %>%
+  filter(!word1 %in% custom_stop$word) %>%
+  filter(!(str_detect(word1,"â")))  %>%
+  filter(!word2 %in% custom_stop$word)  %>%
+  filter(!(str_detect(word2,"â")))  
+
+# new bigram counts:
+bigram_counts_michelle <- bigrams_filtered_michelle %>% 
+  count(word1, word2, sort = TRUE)
+
+datatable(bigram_counts_michelle)
+
+
+bigrams_separated_melania <- melania_ngrams %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigrams_filtered_melania <- bigrams_separated_melania %>%
+  filter(!word1 %in% custom_stop$word) %>%
+  filter(!(str_detect(word1,"â")))  %>%
+  filter(!word2 %in% custom_stop$word)  %>%
+  filter(!(str_detect(word2,"â")))
+
+# new bigram counts:
+bigram_counts_melania <- bigrams_filtered_melania %>% 
+  count(word1, word2, sort = TRUE)
+
+datatable(bigram_counts_melania)
+```
+
+Now, as in the book, the words can be recombined.
+
+```{r}
+bigrams_united_michelle <- bigrams_filtered_michelle %>%
+  unite(bigram, word1, word2, sep = " ")
+
+bigrams_united_melania <- bigrams_filtered_melania %>%
+  unite(bigram, word1, word2, sep = " ")
+
+```
+
+Now the tf-idf of the bigrams can be computed.
+
+```{r}
+df_bma <- data.frame(bigrams_united_melania,
+                     list(rep("melania", dim(bigrams_united_melania)[1])))
+
+df_bmi <- data.frame(bigrams_united_michelle,
+                     list(rep("michelle", dim(bigrams_united_michelle)[1])))
+
+colnames(df_bma)[1] ="bigram"
+colnames(df_bma)[2] ="person"
+colnames(df_bmi)[1] ="bigram"
+colnames(df_bmi)[2] ="person"
+
+df_bmm <- rbind(df_bma, df_bmi)
+
+bigram_tf_idf <- df_bmm |>
+  count(person, bigram) |>
+  bind_tf_idf(bigram, person, n) |>
+  arrange(desc(tf_idf))
+
+datatable(bigram_tf_idf)
+```
+
+I am going to skip the section the book did on investigating negating bigrams as I don't see them used often in these speeches.
+
+Next, the book demonstrated how to create a bigram graph. Melania did not repeat any of her ngrams, so I just plotted Michelles.
+
+```{r}
+bigram_graph_michelle <- bigram_counts_michelle |>
+  filter(n > 2) |>
+  graph_from_data_frame()
+
+a <- grid::arrow(type = "closed", length = unit(.07, "inches"))
+
+ggraph(bigram_graph_michelle, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.01, 'inches')) +
+  geom_node_point(color = "lightblue", size = 2) +
+  geom_node_text(aes(label = name), vjust = .5, hjust = .5) +
+  theme_void()
+```
+
+You can see the bigrams pulled out were some of the most important themes, the president, the campaign slogan, and healthcare. 
+
+
+## Conclusion
+
+The objective of this assignment, getting an introduction to Natural Language Processing, was met. The Chapter 2 example from “tidytext: Text Mining and Analysis Using Tidy Data Principles in R” was recreated. Then as an extension a new lexicon, in Spanish, was used to explore sentiment in childrens books. Additionally, the textbooks Chapter 3 and 4 were used as a guide to investigate the Michelle and Melania speeches from their respective conventions.
+
+## Citations
+
+Text Mining Chapter 2 Example: 
+
+1. Silge J, Robinson D (2016). “tidytext: Text Mining and Analysis Using Tidy Data Principles in R” doi:10.21105/joss.00037, http://dx.doi.org/10.21105/joss.00037
+
+Extension:
+
+2. Grigori Sidorov, Sabino Miranda-Jiménez, Francisco Viveros-Jiménez, Alexander Gelbukh, Noé Castro-Sánchez, Francisco Velásquez, Ismael Díaz-Rangel, Sergio Suárez-Guerra, Alejandro Treviño, and Juan Gordon. Empirical Study of Opinion Mining in Spanish Tweets. LNAI 7629, 2012, pp. 1-14.
+
+3. Ismael Díaz Rangel, Grigori Sidorov, Sergio Suárez-Guerra. Creación y evaluación de un diccionario marcado con emociones y ponderado para el español. Onomazein , 29, 23 p., 2014, DOI 10.7764/onomazein.29.5
+
+4. Spanish Academy (https://www.spanish.academy/blog/15-childrens-spanish-books-with-free-pdf-download/)
+
+5. Sentiment Lexicons for 81 Languages (https://www.kaggle.com/datasets/rtatman/sentiment-lexicons-for-81-languages)
+
+6. Expert System Semantic Intelligence. Expert IQ Report: Melania vs. Michelle – Divided Speeches COMPARING MELANIA TRUMP AND MICHELLE OBAMA SPEECHES ANALYSIS (https://www.expert.ai/wp-content/uploads/2018/01/Melania-Trump_vs_Michelle-Obama_Report.pdf)
+
+## Lexicon Licenses and Citations
+
+1. Name: AFINN-111 
+ URL: http://www2.imm.dtu.dk/pubdb/views/publication_details.php?id=6010 
+ License: Open Database License (ODbL) v1.0 
+ Size: 78 KB (cleaned 59 KB) 
+ Download mechanism: https 
+ 
+2.  Name: NRC Word-Emotion Association Lexicon 
+ URL: http://saifmohammad.com/WebPages/lexicons.html 
+ License: License required for commercial use. Please contact Saif M. Mohammad (saif.mohammad@nrc-cnrc.gc.ca). 
+ Size: 22.8 MB (cleaned 424 KB) 
+ Download mechanism: http 
+ Citation info:
+
+This dataset was published in Saif M. Mohammad and Peter Turney. (2013), ``Crowdsourcing a Word-Emotion Association Lexicon.'' Computational Intelligence, 29(3): 436-465.
+
+article{mohammad13,
+author = {Mohammad, Saif M. and Turney, Peter D.},
+title = {Crowdsourcing a Word-Emotion Association Lexicon},
+journal = {Computational Intelligence},
+volume = {29},
+number = {3},
+pages = {436-465},
+doi = {10.1111/j.1467-8640.2012.00460.x},
+url = {https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1467-8640.2012.00460.x},
+eprint = {https://onlinelibrary.wiley.com/doi/pdf/10.1111/j.1467-8640.2012.00460.x},
+year = {2013}
+}
+
+3. This dataset was first published in Minqing Hu and Bing Liu, ``Mining and summarizing customer reviews.'', Proceedings of the ACM SIGKDD International Conference on Knowledge Discovery & Data Mining (KDD-2004), 2004.
+
+inproceedings{Hu04,
+author = {Hu, Minqing and Liu, Bing},
+title = {Mining and Summarizing Customer Reviews},
+booktitle = {Proceedings of the Tenth ACM SIGKDD International Conference on Knowledge Discovery and Data Mining},
+series = {KDD '04},
+year = {2004},
+isbn = {1-58113-888-1},
+location = {Seattle, WA, USA},
+pages = {168--177},
+numpages = {10},
+url = {http://doi.acm.org/10.1145/1014052.1014073},
+doi = {10.1145/1014052.1014073},
+acmid = {1014073},
+publisher = {ACM},
+address = {New York, NY, USA},
+keywords = {reviews, sentiment classification, summarization, text mining},
+}
